@@ -1,34 +1,62 @@
-#include <inc/belf.h>
 #include <inc/x86.h>
+#include <inc/elf.h>
+
+/**********************************************************************
+ * This a dirt simple boot loader, whose sole job is to boot
+ * an ELF kernel image from the first IDE hard disk.
+ *
+ * DISK LAYOUT
+ *  * This program(boot.S and main.c) is the bootloader.  It should
+ *    be stored in the first sector of the disk.
+ *
+ *  * The 2nd sector onward holds the kernel image.
+ *
+ *  * The kernel image must be in ELF format.
+ *
+ * BOOT UP STEPS
+ *  * when the CPU boots it loads the BIOS into memory and executes it
+ *
+ *  * the BIOS intializes devices, sets of the interrupt routines, and
+ *    reads the first sector of the boot device(e.g., hard-drive)
+ *    into memory and jumps to it.
+ *
+ *  * Assuming this boot loader is stored in the first sector of the
+ *    hard-drive, this code takes over...
+ *
+ *  * control starts in boot.S -- which sets up protected mode,
+ *    and a stack so C code then run, then calls bootmain()
+ *
+ *  * bootmain() in this file takes over, reads in the kernel and jumps to it.
+ **********************************************************************/
 
 #define SECTSIZE	512
-#define ELFHDR		((Elf32_Ehdr*)0x10000) // scratch space
-#define ELF_MAGIC   "\x7FELF"	/* "\x7FELF" in little endian */
+#define ELFHDR		((struct Elf *) 0x10000) // scratch space
 
-void 
+void readsect(void*, uint32_t);
+void readseg(uint32_t, uint32_t, uint32_t);
+
+void
 bootmain(void)
-{	
-    Elf32_Phdr *ph, *eph;
+{
+	struct Proghdr *ph, *eph;
 	int i;
-   
+
 	// read 1st page off disk
-	readseg((uint32_t)ELFHDR, SECTSIZE*8, 0);
+	readseg((uint32_t) ELFHDR, SECTSIZE*8, 0);
 
 	// is this a valid ELF?
-	for(int i = 0;i < 4;i++) {
-        if(ELFHDR->e_ident[i] != ELF_MAGIC[i])
-            goto bad;
-    }
+	// if (ELFHDR->e_magic != ELF_MAGIC)
+	// 	goto bad;
 
-    // load each program segment (ignores ph flags)
-	ph = (Elf32_Phdr *) ((uint8_t *) ELFHDR + ELFHDR->e_phoff);
+	// load each program segment (ignores ph flags)
+	ph = (struct Proghdr *) ((uint8_t *) ELFHDR + ELFHDR->e_phoff);
 	eph = ph + ELFHDR->e_phnum;
 	for (; ph < eph; ph++) {
 		// p_pa is the load address of this segment (as well
 		// as the physical address)
-		readseg(ph->p_paddr, ph->p_memsz, ph->p_offset);  //物理地址要小心了
+		readseg(ph->p_pa, ph->p_memsz, ph->p_offset);
 		for (i = 0; i < ph->p_memsz - ph->p_filesz; i++) {
-			*((char *) ph->p_paddr + ph->p_filesz + i) = 0;
+			*((char *) ph->p_pa + ph->p_filesz + i) = 0;
 		}
 	}
 
@@ -43,15 +71,17 @@ bad:
 		/* do nothing */;
 }
 
+// Read 'count' bytes at 'offset' from kernel into physical address 'pa'.
+// Might copy more than asked
 void
 readseg(uint32_t pa, uint32_t count, uint32_t offset)
 {
-    uint32_t end_pa;
+	uint32_t end_pa;
 
 	end_pa = pa + count;
 
 	// round down to sector boundary
-	pa &= ~(SECTSIZE - 1);
+	pa &= ~(SECTSIZE - 1);  
 
 	// translate from bytes to sectors, and kernel starts at sector 1
 	offset = (offset / SECTSIZE) + 1;
@@ -70,10 +100,18 @@ readseg(uint32_t pa, uint32_t count, uint32_t offset)
 	}
 }
 
-void 
-readsect(uint8_t* dst,uint32_t offset)
+void
+waitdisk(void)
 {
-    // wait for disk to be ready
+	// wait for disk reaady
+	while ((inb(0x1F7) & 0xC0) != 0x40)
+		/* do nothing */;
+}
+
+void
+readsect(void *dst, uint32_t offset)
+{
+	// wait for disk to be ready
 	waitdisk();
 
 	outb(0x1F2, 1);		// count = 1
@@ -90,10 +128,3 @@ readsect(uint8_t* dst,uint32_t offset)
 	insl(0x1F0, dst, SECTSIZE/4);
 }
 
-void
-waitdisk(void)
-{
-	// wait for disk reaady
-	while ((inb(0x1F7) & 0xC0) != 0x40)
-		/* do nothing */;
-}
